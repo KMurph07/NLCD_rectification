@@ -7,12 +7,17 @@ output: rmarkdown::github_document
 
 ### Partial Least Squares (PLS) Analysis of NLCD data from SCBI
 
-* This doesn't split data into training and test sets
 * Only focuses on predicting 3 NLCD classes: "DF", "EF", "SS"
+* Min Band = 383.5343
+* Max Band = 2511.8945
+* 5 nm increments
+* Should remove noise in Bands: 191 to 212 and 281 to 314
 
 ```{r setup, include=FALSE}
 library(pls)
 library(plyr)
+library(dplyr)
+library(ggplot2)
 library(caret)
 
 ## environment options
@@ -36,47 +41,86 @@ multipleCombine <- function(input, ply = llply, sep = ","){
   )
 }
 
+#### simple function to change the number of panes, row by column
+panes = function(x,y){
+  par(mfrow=c(x,y))
+}
+
 ## combine files into a single data frame
 inputdata <- multipleCombine(training_files, ply = ldply)
 
 #### >> THIS DATA SUBSET IS USED FOR THE SUBSEQUENT CODE CHUNKS << ####
 ## filter to three classes of interest ##
-subdata <- dplyr::filter(inputdata, NLCD %in% c("SS", "EF", "DF"))
+subdata <- dplyr::filter(inputdata, NLCD %in% c("PH", "DF"))
 #subdata <- dplyr::filter(inputdata)
+
+## training and test set split
+train_index <- sample(seq_len(nrow(subdata)), size = 0.8*nrow(subdata))
+train <- subdata[train_index,]
+test <- subdata[-train_index, ]
 ```
 
 
 ```{r}
 ## plot raw data
-wavelengths<-seq(1, 426,by=1) # wavelengths captured by machine
+bands<-seq(1, 426,by=1) # wavelengths captured by machine
+wavelengths <- seq(383, 2511, by = 5)
 reflectance <- subdata[,c(11:ncol(subdata))] # reflectance values 
 
 # need to setup the x-axis, the wavelengths, and a transpose of the reflectance matrix with t()
 reflectance.plot = matplot(x = wavelengths, y = t(reflectance),lty=1,xlab="wavelengths(nm)",ylab="Reflectance",type="l", main = "Reflectance by Sample")
 ```
 
+## Plot NLCD of interest
 
 ```{r}
+panes(3,1)
+avg_refl <- subdata %>% 
+    select(-GRID_CODE, -POINT_X,-POINT_Y, -UPPERL_X, -UPPERL_Y, -X_Ind, -Y_Ind, -X_Ext, -Y_Ext) %>% 
+    group_by(NLCD) %>% 
+    summarise_all(funs(mean))
+
+min_refl <- subdata %>% 
+    select(-GRID_CODE, -POINT_X,-POINT_Y, -UPPERL_X, -UPPERL_Y, -X_Ind, -Y_Ind, -X_Ext, -Y_Ext) %>% 
+    group_by(NLCD) %>% 
+    summarise_all(funs(min))
+
+max_refl <- subdata %>% 
+    select(-GRID_CODE, -POINT_X,-POINT_Y, -UPPERL_X, -UPPERL_Y, -X_Ind, -Y_Ind, -X_Ext, -Y_Ext) %>% 
+    group_by(NLCD) %>% 
+    summarise_all(funs(max))
+
+matplot(x = wavelengths, y = t(avg_refl[,c(2:ncol(avg_refl))]), type = "l", main = "Average Reflectance per NLCD")
+matplot(x = wavelengths, y = t(min_refl[,c(2:ncol(min_refl))]), type = "l", main = "Min Reflectance per NLCD")
+matplot(x = wavelengths, y = t(max_refl[,c(2:ncol(max_refl))]), type = "l", main = "Max Reflectance per NLCD")
+```
+
+
+```{r}
+reflectance_train <- train[,c(11:ncol(train))]
 ## convert reflectance to a matrix, as this is what plsr() requires
-refl = as.matrix(reflectance)
-subdata$NLCD <- as.factor(subdata$NLCD)
+## >> REMOVE WATER VAPOR BAND << ## 
+refl_train = as.matrix(reflectance_train[,c(1:281, 314:ncol(reflectance_train))])
+train$NLCD <- as.factor(train$NLCD)
 
 ## convert NLCD character to factor first, then convert the factor to a numeric value so plsr() can analyze data
-NLCD_num <- as.matrix(as.numeric(as.factor(subdata$NLCD)),ncol=1) # make numeric matrix
+NLCD_num <- as.matrix(as.numeric(as.factor(train$NLCD)), ncol=1) # make numeric matrix
 
-## run the model
-m1 <- plsr(NLCD_num ~ log(refl+1), ncomp = 100, validation = "CV")
+## run the models
+m1 <- plsr(NLCD_num ~ log(refl_train+1), ncomp = 100, validation = "CV")
+m2 <- randomForest(NLCD ~ ., data = dplyr::select(train, -GRID_CODE, -POINT_X,-POINT_Y, -UPPERL_X, -UPPERL_Y, -X_Ind, -Y_Ind, -X_Ext, -Y_Ext))
+m2
 
 ## these are the numeric classes converted back to NLCD labels
-NLCD_back <-factor(NLCD_num, labels = levels(subdata$NLCD), levels = 1:3)
+NLCD_back <-factor(NLCD_num, labels = levels(train$NLCD), levels = 1:3)
 
 ## add predictions from the plsr() model
-subdata$pred_num_class <- predict(m1, ncomp = 25) # the output of this is an array, each column in the array is the predicted output for each principal component
+train$pred_num_class <- predict(m1, ncomp = 25) # the output of this is an array, each column in the array is the predicted output for each principal component
 #subdata$pred_fac_class <- round(subdata$pred_num_class)
 
 ## 1. take the mean prediction from the components (specified by 'ncomp') by applying mean() across a row
 ## 2. then round that mean, it represents a "vote" for the class value from each component
-confusion <- data.frame(actual = NLCD_num, predicted = round(apply(X = subdata$pred_num_class, 1, FUN = mean)))
+confusion <- data.frame(actual = NLCD_num, predicted = round(apply(X = train$pred_num_class, 1, FUN = mean)))
 
 # cross reference the actual class versus the predicted class
 crossRef <- table(confusion)
@@ -84,7 +128,8 @@ crossRef <- table(confusion)
 
 ### Total Components Selected
 
-* The root mean squared error "RMSE" plot shows that ~25 principal components returns the lowest amount of error, thus all following graphs and confusion tables use 25 PCs
+* The "full data set" (no split between test and training) root mean squared error "RMSE" plot shows that ~25 principal components returns the lowest amount of error, thus all following graphs and confusion tables use 25 PCs
+* Doing an 80/20 training/testing split returns closer to 10 PCs
 
 ```{r}
 barplot(explvar(m1), axis.lty = 1, las = 2, main = "% Variance Explained by Component")
@@ -92,10 +137,11 @@ barplot(explvar(m1), axis.lty = 1, las = 2, main = "% Variance Explained by Comp
 plot(RMSEP(m1), legendpos = "topright", main = "Validation Error")
 ```
 
-### Loadings for 25 Components - untransformed Y and X
+### Loadings for 10 Components - untransformed Y and X
 
 ```{r error=FALSE}
-loadingplot(m1, comps = 1:25, legendpos = -1, labels = c(1:426), xlab = "Band")
+loadingplot(m1, comps = 1:10, legendpos = -1, labels = c(1:426), xlab = "Band")
+abline(h=0)
 ```
 
 ### Confusion Matrix -- Full Data Set (not split between training and test sets)
@@ -111,5 +157,30 @@ if (ncol(crossRef != length(unique(NLCD_num)))){
 } else {
     caret::confusionMatrix(crossRef)
 }
+```
 
+
+## Validate on Test Data
+
+```{r}
+reflectance_test <- test[,c(11:ncol(test))]
+## convert reflectance to a matrix, as this is what plsr() requires
+## >> REMOVE WATER VAPOR BAND << ## 
+refl_test = as.matrix(reflectance_test[,c(1:281, 314:ncol(reflectance_test))])
+test$NLCD <- as.factor(test$NLCD)
+
+## convert NLCD character to factor first, then convert the factor to a numeric value so plsr() can analyze data
+NLCD_num_test <- as.matrix(as.numeric(as.factor(test$NLCD)), ncol=1) # make numeric matrix
+
+## add predictions from the plsr() model
+testpred <- predict(m1, ncomp = 10, newdata = refl_test) # the output of this is an array, each column in the array is the predicted output for each principal component
+#subdata$pred_fac_class <- round(subdata$pred_num_class)
+
+## 1. take the mean prediction from the components (specified by 'ncomp') by applying mean() across a row
+## 2. then round that mean, it represents a "vote" for the class value from each component
+confusion <- data.frame(actual = NLCD_num_test, predicted = round(testpred))
+
+# cross reference the actual class versus the predicted class
+crossRef <- table(confusion)
+caret::confusionMatrix(crossRef[,c(2:4)])
 ```
