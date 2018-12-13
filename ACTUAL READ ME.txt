@@ -1,0 +1,9 @@
+Explanation of files:
+
+- .csvs ending in "_spectral" are training data that already has the spectral and LiDAR information pulled
+- "nlcd_train" is all the training data for each NLCD class in one
+- "RFC_Run20_Choose100_20181205.csv" is the bands selected from the RFE model
+- "RFC_Run20_Choose100_20181205.pkl" is the actual random forest algorithm
+- "NLCD_30m_Centroid_run20_choose100_newNLCDclass_20181205.csv" is the full site classified and rescaled to 30x30m pixels
+
+NOTE: Unfortunately the full site information is too large and could not be uploaded to git. I can put those in a shared folder on the N:/ drive if you'd like to mess around with that
